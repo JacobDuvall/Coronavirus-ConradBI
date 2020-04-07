@@ -1,0 +1,1 @@
+"C:\Users\jdale\AppData\Local\Programs\Python\Python37-32\python.exe" "C:\Users\jdale\OneDrive\coronavirus\Coronavirus-ConradBI\collection_scripts\county_collection.py"
