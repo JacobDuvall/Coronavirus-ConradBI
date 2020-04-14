@@ -117,6 +117,20 @@ def bulk_insert_state_csv():
     disconnect_database(conn)
 
 
+def bulk_insert_weather_csv():
+    conn = connect_database()
+    cursor = conn.cursor()
+    sql = "LOAD DATA LOCAL INFILE " \
+          "'C:\\\\Users\\\\jdale\\\\OneDrive\\\\coronavirus\\\\Coronavirus-ConradBI\\\\datasets\\\\daily_weather.csv' " \
+          "INTO TABLE a_county_weather " \
+          "FIELDS TERMINATED BY ',' " \
+          "LINES TERMINATED BY '\n' " \
+          "IGNORE 1 ROWS"
+    cursor.execute(sql)
+    conn.commit()
+    cursor.close()
+    disconnect_database(conn)
+
 def connect_database():
     # Connect to database and return connection
     return pyodbc.connect("Driver={MySQL ODBC 5.3 ANSI Driver};"

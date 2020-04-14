@@ -2,7 +2,7 @@ from noaa_sdk import noaa
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pytz import timezone
 import pytz
 from selenium import webdriver
@@ -12,6 +12,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 import time
+import database
+
 
 def test():
     pass
@@ -90,29 +92,6 @@ def get_zip_from_county():
                 'Coronavirus-ConradBI\\datasets\\zip_code_attached_to_county.csv')
 
 
-def get_est_localtime(timestamp, utc, est_tz):
-
-    utc_dt = utc.localize(datetime.utcfromtimestamp(timestamp))
-    est_dt = utc_dt.astimezone(est_tz)
-    return est_dt
-
-
-# inspect network to get api from wunderground
-def scrape_weather():
-    utc = pytz.utc
-    fmt = '%Y-%m-%d'
-    est_tz = timezone('US/Eastern')
-    r = requests.get('https://api.weather.com/v1/location/KOKC:9:US/observations/'
-                     'historical.json?apiKey=6532d6454b8aa370768e63d6ba5a832e&'
-                     'units=e&startDate=20200324&endDate=20200409')
-    df = pd.DataFrame(r.json()['observations'])
-    df['valid_time_gmt'] = df['valid_time_gmt'].map(lambda x: get_est_localtime(x, utc, est_tz).strftime(fmt))
-    df = df.groupby(by='valid_time_gmt').agg([min, max, np.mean])
-    #print(df['precip_total']['mean'])
-    #print(df['temp'])
-    return df
-
-
 def get_location_data():
     file = pd.read_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\station_scratch_fixed.csv')
     search = SearchEngine()
@@ -173,14 +152,16 @@ def scrape_station_information(data):
             chrome_options.add_argument("--headless")
             driver = webdriver.Chrome(options=chrome_options)
             driver.get(url)
+            # right click "History", inspect, and then right click on the highlighted element Copy to get XPath
             WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH,
                                                                         '//*[@id="inner-content"]/div[2]/'
                                                                         'lib-city-header/'
                                                                         'div[2]/lib-subnav/div/div[3]/ul/li[5]/a/span'))
                                             ).click()
-            time.sleep(3)
+            time.sleep(4)
 
             station = driver.current_url[-4:]
+            driver.quit()
 
             print(station, row['Zip_Code'])
             insert_string = "{0},{1}\n".format(row['Zip_Code'], station)
@@ -196,9 +177,448 @@ def scrape_station_information(data):
             file_3.close()
 
 
-def main():
-    get_location_data()
+def consolidate_good_and_automated_files():
+    good = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\station_scratch_fixed.csv')
+    automated = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\station_scratch_automation.csv')
+
+    flag = 0
+
+    zip_list = list()
+    station_list = list()
+
+    for index, row in good.iterrows():
+        for index2, row2 in automated.iterrows():
+            if row['Zip_Code'] == row2['Zip_Code']:
+                flag = 1
+                zip_list.append(row['Zip_Code'])
+                station_list.append(row2['Station'])
+        if flag == 0:
+            zip_list.append(row['Zip_Code'])
+            station_list.append(row['Station'])
+        else:
+            flag = 0
+        print(index)
+
+    data = {'Zip_Code': zip_list,
+            'Station': station_list}
+    data = pd.DataFrame(data=data)
+    data.set_index('Zip_Code', inplace=True)
+
+    data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                'Coronavirus-ConradBI\\datasets\\zip_codes_with_stations_V1.csv')
 
 
-if __name__ == '__main__':
-    main()
+def join_station_with_county():
+    county = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\zip_code_attached_to_county.csv')
+    no_county = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+        'Coronavirus-ConradBI\\datasets\\zip_codes_with_stations_V1.csv')
+
+    joined = county.join(no_county.set_index('Zip_Code'), on='Zip_Code')
+
+    joined.drop_duplicates(subset='FIPs', keep='first', inplace=True)
+
+    joined.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                  'Coronavirus-ConradBI\\datasets\\county_zip_station_V1.csv')
+
+
+def is_station_null():
+    station_table = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+        'Coronavirus-ConradBI\\datasets\\county_zip_station_V1.csv')
+
+    for index, row in station_table.iterrows():
+        if row['Station'] != row['Station']:
+            print(index, row['Zip_Code'])
+
+
+def get_est_localtime(timestamp, utc, est_tz):
+
+    utc_dt = utc.localize(datetime.utcfromtimestamp(timestamp))
+    est_dt = utc_dt.astimezone(est_tz)
+    return est_dt
+
+
+# inspect network to get api from wunderground
+def scrape_weather(station, start_date, end_date):
+    utc = pytz.utc
+    fmt = '%Y-%m-%d'
+    est_tz = timezone('US/Eastern')
+    # Inspect page, Network, refresh page, check out XHR's to find this API call
+    url = 'https://api.weather.com/v1/location/{0}:9:US/observations/' \
+          'historical.json?apiKey=6532d6454b8aa370768e63d6ba5a832e&' \
+          'units=e&startDate={1}&endDate={2}'.format(station, start_date, end_date)
+    r = requests.get(url)
+    if r.status_code == 400:
+        if station[0] == 'C':
+            url = 'https://api.weather.com/v1/location/{0}:9:CA' \
+                  '/observations/historical.json?apiKey=6532d6454b8' \
+                  'aa370768e63d6ba5a832e&units=e&startDate={1}&endDate={2}'.format(station, start_date, end_date)
+            r = requests.get(url)
+            if r.status_code == 400:
+                return pd.DataFrame()
+        elif station[0] == 'M':
+            url = 'https://api.weather.com/v1/location/{0}:9' \
+                  ':MX/observations/historical.json?apiKey=6532d6454b8' \
+                  'aa370768e63d6ba5a832e&units=e&startDate={1}&endDate={2}'.format(station, start_date, end_date)
+            r = requests.get(url)
+            if r.status_code == 400:
+                return pd.DataFrame()
+        else:
+            return pd.DataFrame()
+    df = pd.DataFrame(r.json()['observations'])
+    # observations come in in blocks of time, this code consolidates and groups that code by
+    # min, max, and mean for the dates
+    df['valid_time_gmt'] = df['valid_time_gmt'].map(lambda x: get_est_localtime(x, utc, est_tz).strftime(fmt))
+    df = df.groupby(by='valid_time_gmt').agg([min, max, np.mean]).reset_index()
+    # print(df['precip_total']['mean'])
+    # print(df['temp'])
+    time.sleep(1)
+    return df
+
+
+def write_old_temperature(df, row, start_date, end_date):
+    fips_list = list()
+    county_list = list()
+    state_list = list()
+    zip_list = list()
+    date_list = list()
+    min_temp_list = list()
+    max_temp_list = list()
+    avg_temp_list = list()
+    min_dp_list = list()
+    max_dp_list = list()
+    avg_dp_list = list()
+    min_humid_list = list()
+    max_humid_list = list()
+    avg_humid_list = list()
+    precip_list = list()
+
+    if df.empty:
+        print(row['Zip_Code'], row['Station'])
+        fips_list.append(row['FIPs'])
+        county_list.append(row['County'])
+        state_list.append(row['State'])
+        zip_list.append(row['Zip_Code'])
+        date_list.append('NA')
+        min_temp_list.append('NA')
+        max_temp_list.append('NA')
+        avg_temp_list.append('NA')
+        min_dp_list.append('NA')
+        max_dp_list.append('NA')
+        avg_dp_list.append('NA')
+        min_humid_list.append('NA')
+        max_humid_list.append('NA')
+        avg_humid_list.append('NA')
+        precip_list.append('NA')
+
+        data = {'FIPs': fips_list,
+                'County': county_list,
+                'State': state_list,
+                'Zip_Code': zip_list,
+                'Date': date_list,
+                'Min_Temperature': min_temp_list,
+                'Max_Temperature': max_temp_list,
+                'Average_Temperature': avg_temp_list,
+                'Min_Dew_Point': min_dp_list,
+                'Max_Dew_Point': max_dp_list,
+                'Average_Dew_Point': avg_dp_list,
+                'Min_Relative_Humidity': min_humid_list,
+                'Max_Relative_Humidity': max_humid_list,
+                'Average_Relative_Humidity': avg_humid_list,
+                'Total_Precipitation': precip_list}
+
+        data = pd.DataFrame(data=data)
+        data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                    'Coronavirus-ConradBI\\datasets\\old_weather.csv', mode='a', header=False, index=False)
+
+    else:
+        for index1, row1 in df.iterrows():
+            try:
+                if start_date <= \
+                        date(int(list(row1['valid_time_gmt'])[0][:4]),
+                             int(list(row1['valid_time_gmt'])[0][5:7]),
+                             int(list(row1['valid_time_gmt'])[0][-2:])) \
+                        <= end_date:
+                    date_list.append(list(row1['valid_time_gmt'])[0])
+                else:
+                    continue
+            except:
+                pass
+            fips_list.append(row['FIPs'])
+            county_list.append(row['County'])
+            state_list.append(row['State'])
+            zip_list.append(row['Zip_Code'])
+            try:
+                min_temp_list.append(row1['temp']['min'])
+            except:
+                min_temp_list.append('NA')
+            try:
+                max_temp_list.append(row1['temp']['max'])
+            except:
+                max_temp_list.append('NA')
+            try:
+                avg_temp_list.append(row1['temp']['mean'])
+            except:
+                avg_temp_list.append('NA')
+            try:
+                min_dp_list.append(row1['dewPt']['min'])
+            except:
+                min_dp_list.append('NA')
+            try:
+                max_dp_list.append(row1['dewPt']['max'])
+            except:
+                max_dp_list.append('NA')
+            try:
+                avg_dp_list.append(row1['dewPt']['mean'])
+            except:
+                avg_dp_list.append('NA')
+            try:
+                min_humid_list.append(row1['rh']['min'])
+            except:
+                min_humid_list.append('NA')
+            try:
+                max_humid_list.append(row1['rh']['max'])
+            except:
+                max_humid_list.append('NA')
+            try:
+                avg_humid_list.append(row1['rh']['mean'])
+            except:
+                avg_humid_list.append('NA')
+            try:
+                precip_list.append(row1['precip_total']['mean'])
+            except:
+                precip_list.append('NA')
+        data = {'FIPs': fips_list,
+                'County': county_list,
+                'State': state_list,
+                'Zip_Code': zip_list,
+                'Date': date_list,
+                'Min_Temperature': min_temp_list,
+                'Max_Temperature': max_temp_list,
+                'Average_Temperature': avg_temp_list,
+                'Min_Dew_Point': min_dp_list,
+                'Max_Dew_Point': max_dp_list,
+                'Average_Dew_Point': avg_dp_list,
+                'Min_Relative_Humidity': min_humid_list,
+                'Max_Relative_Humidity': max_humid_list,
+                'Average_Relative_Humidity': avg_humid_list,
+                'Total_Precipitation': precip_list}
+
+        data = pd.DataFrame(data=data)
+        data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                    'Coronavirus-ConradBI\\datasets\\old_weather.csv', mode='a', header=False, index=False)
+
+
+def write_daily_temperature(df, row, start_date, end_date):
+    fips_list = list()
+    county_list = list()
+    state_list = list()
+    zip_list = list()
+    date_list = list()
+    min_temp_list = list()
+    max_temp_list = list()
+    avg_temp_list = list()
+    min_dp_list = list()
+    max_dp_list = list()
+    avg_dp_list = list()
+    min_humid_list = list()
+    max_humid_list = list()
+    avg_humid_list = list()
+    precip_list = list()
+
+    if df.empty:
+        print(row['Zip_Code'], row['Station'])
+        fips_list.append(row['FIPs'])
+        county_list.append(row['County'])
+        state_list.append(row['State'])
+        zip_list.append(row['Zip_Code'])
+        date_list.append('NA')
+        min_temp_list.append('NA')
+        max_temp_list.append('NA')
+        avg_temp_list.append('NA')
+        min_dp_list.append('NA')
+        max_dp_list.append('NA')
+        avg_dp_list.append('NA')
+        min_humid_list.append('NA')
+        max_humid_list.append('NA')
+        avg_humid_list.append('NA')
+        precip_list.append('NA')
+
+        data = {'FIPs': fips_list,
+                'County': county_list,
+                'State': state_list,
+                'Zip_Code': zip_list,
+                'Date': date_list,
+                'Min_Temperature': min_temp_list,
+                'Max_Temperature': max_temp_list,
+                'Average_Temperature': avg_temp_list,
+                'Min_Dew_Point': min_dp_list,
+                'Max_Dew_Point': max_dp_list,
+                'Average_Dew_Point': avg_dp_list,
+                'Min_Relative_Humidity': min_humid_list,
+                'Max_Relative_Humidity': max_humid_list,
+                'Average_Relative_Humidity': avg_humid_list,
+                'Total_Precipitation': precip_list}
+
+        data = pd.DataFrame(data=data)
+        data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                    'Coronavirus-ConradBI\\datasets\\old_weather.csv', mode='a', header=False, index=False)
+
+    else:
+        for index1, row1 in df.iterrows():
+            try:
+                if start_date <= \
+                        date(int(list(row1['valid_time_gmt'])[0][:4]),
+                             int(list(row1['valid_time_gmt'])[0][5:7]),
+                             int(list(row1['valid_time_gmt'])[0][-2:])) \
+                        <= end_date:
+                    date_list.append(list(row1['valid_time_gmt'])[0])
+                else:
+                    continue
+            except:
+                pass
+            fips_list.append(row['FIPs'])
+            county_list.append(row['County'])
+            state_list.append(row['State'])
+            zip_list.append(row['Zip_Code'])
+            try:
+                min_temp_list.append(row1['temp']['min'])
+            except:
+                min_temp_list.append('NA')
+            try:
+                max_temp_list.append(row1['temp']['max'])
+            except:
+                max_temp_list.append('NA')
+            try:
+                avg_temp_list.append(row1['temp']['mean'])
+            except:
+                avg_temp_list.append('NA')
+            try:
+                min_dp_list.append(row1['dewPt']['min'])
+            except:
+                min_dp_list.append('NA')
+            try:
+                max_dp_list.append(row1['dewPt']['max'])
+            except:
+                max_dp_list.append('NA')
+            try:
+                avg_dp_list.append(row1['dewPt']['mean'])
+            except:
+                avg_dp_list.append('NA')
+            try:
+                min_humid_list.append(row1['rh']['min'])
+            except:
+                min_humid_list.append('NA')
+            try:
+                max_humid_list.append(row1['rh']['max'])
+            except:
+                max_humid_list.append('NA')
+            try:
+                avg_humid_list.append(row1['rh']['mean'])
+            except:
+                avg_humid_list.append('NA')
+            try:
+                precip_list.append(row1['precip_total']['mean'])
+            except:
+                precip_list.append('NA')
+        data = {'FIPs': fips_list,
+                'County': county_list,
+                'State': state_list,
+                'Zip_Code': zip_list,
+                'Date': date_list,
+                'Min_Temperature': min_temp_list,
+                'Max_Temperature': max_temp_list,
+                'Average_Temperature': avg_temp_list,
+                'Min_Dew_Point': min_dp_list,
+                'Max_Dew_Point': max_dp_list,
+                'Average_Dew_Point': avg_dp_list,
+                'Min_Relative_Humidity': min_humid_list,
+                'Max_Relative_Humidity': max_humid_list,
+                'Average_Relative_Humidity': avg_humid_list,
+                'Total_Precipitation': precip_list}
+
+        data = pd.DataFrame(data=data)
+        data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                    'Coronavirus-ConradBI\\datasets\\daily_weather.csv', mode='a', header=False, index=False)
+
+
+
+def process_old_weather():
+    df = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\county_zip_station_V1.csv')
+
+    data = {'FIPs': list(),
+            'County': list(),
+            'State': list(),
+            'Zip_Code': list(),
+            'Date': list(),
+            'Min_Temperature': list(),
+            'Max_Temperature': list(),
+            'Average_Temperature': list(),
+            'Min_Dew_Point': list(),
+            'Max_Dew_Point': list(),
+            'Average_Dew_Point': list(),
+            'Min_Relative_Humidity': list(),
+            'Max_Relative_Humidity': list(),
+            'Average_Relative_Humidity': list(),
+            'Total_Precipitation': list()}
+
+    data = pd.DataFrame(data=data)
+    data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                'Coronavirus-ConradBI\\datasets\\old_weather.csv', index=False)
+
+    for index, row in df.iterrows():
+        if index >= 0:
+            print(index)
+
+            df = scrape_weather(row['Station'], '20200313', '20200410')
+            start = date(2020, 3, 13)
+            end = date(2020, 4, 10)
+            write_old_temperature(df, row, start, end)
+
+
+def get_yesterday():
+    return date.today() - timedelta(days=1)
+
+
+def process_weather_daily():
+    df = pd.read_csv(
+        'C:\\Users\\jdale\\OneDrive\\coronavirus\\Coronavirus-ConradBI\\datasets\\county_zip_station_V1.csv')
+
+    data = {'FIPs': list(),
+            'County': list(),
+            'State': list(),
+            'Zip_Code': list(),
+            'Date': list(),
+            'Min_Temperature': list(),
+            'Max_Temperature': list(),
+            'Average_Temperature': list(),
+            'Min_Dew_Point': list(),
+            'Max_Dew_Point': list(),
+            'Average_Dew_Point': list(),
+            'Min_Relative_Humidity': list(),
+            'Max_Relative_Humidity': list(),
+            'Average_Relative_Humidity': list(),
+            'Total_Precipitation': list()}
+
+    data = pd.DataFrame(data=data)
+    data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                'Coronavirus-ConradBI\\datasets\\daily_weather.csv', index=False)
+
+    start_date = database.select_database("SELECT date from coronavirus.a_county_weather ORDER BY date DESC LIMIT 1;")
+    start_date = (start_date['date'])[0] + timedelta(days=1)
+    end_date = get_yesterday()
+    start_date_formatted = str(start_date).replace('-', '')
+    end_date_formatted = str(end_date).replace('-', '')
+
+    for index, row in df.iterrows():
+        if index >= 0:
+            print(index)
+
+            df = scrape_weather(row['Station'], start_date_formatted, end_date_formatted)
+            write_daily_temperature(df, row, start_date, end_date)
+
