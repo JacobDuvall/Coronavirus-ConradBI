@@ -276,7 +276,7 @@ def scrape_weather(station, start_date, end_date):
     df = df.groupby(by='valid_time_gmt').agg([min, max, np.mean]).reset_index()
     # print(df['precip_total']['mean'])
     # print(df['temp'])
-    time.sleep(1)
+    time.sleep(.8)
     return df
 
 
@@ -542,9 +542,12 @@ def write_daily_temperature(df, row, start_date, end_date):
                 'Total_Precipitation': precip_list}
 
         data = pd.DataFrame(data=data)
-        data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
-                    'Coronavirus-ConradBI\\datasets\\daily_weather.csv', mode='a', header=False, index=False)
-
+        try:
+            data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                        'Coronavirus-ConradBI\\datasets\\daily_weather.csv', mode='a', header=False, index=False)
+        except OSError:
+            data.to_csv('C:\\Users\\jdale\\OneDrive\\coronavirus\\'
+                        'Coronavirus-ConradBI\\datasets\\daily_weather.csv', mode='a', header=False, index=False)
 
 
 def process_old_weather():
